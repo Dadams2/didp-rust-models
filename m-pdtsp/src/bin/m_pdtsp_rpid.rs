@@ -156,9 +156,36 @@ fn main() {
             let mut solver = solvers::create_cabs(one_pdtsp, parameters, cabs_parameters);
             io::run_solver_and_dump_solution_history(&mut solver, &args.history).unwrap()
         }
+        SolverChoice::BlindCabs => {
+            let cabs_parameters = CabsParameters::default();
+            println!("Preparing time: {time}s", time = timer.get_elapsed_time());
+            let mut solver = solvers::create_blind_cabs(one_pdtsp, parameters, cabs_parameters);
+            io::run_solver_and_dump_solution_history(&mut solver, &args.history).unwrap()
+        }
         SolverChoice::Astar => {
             println!("Preparing time: {time}s", time = timer.get_elapsed_time());
             let mut solver = solvers::create_astar(one_pdtsp, parameters);
+            io::run_solver_and_dump_solution_history(&mut solver, &args.history).unwrap()
+        }
+        SolverChoice::Dijkstra => {
+            println!("Preparing time: {time}s", time = timer.get_elapsed_time());
+            let mut solver = solvers::create_dijkstra(one_pdtsp, parameters);
+            io::run_solver_and_dump_solution_history(&mut solver, &args.history).unwrap()
+        }
+        SolverChoice::PartialExpansionAstar => {
+            let pe_parameters = PartialExpansionParameters {
+                delta: args.pe_delta,
+            };
+            println!("Preparing time: {time}s", time = timer.get_elapsed_time());
+            let mut solver = solvers::create_partial_expansion_astar(one_pdtsp, parameters, pe_parameters);
+            io::run_solver_and_dump_solution_history(&mut solver, &args.history).unwrap()
+        }
+        SolverChoice::SmaStar => {
+            let sma_parameters = SmaStarParameters {
+                max_queue_size: args.sma_max_queue_size,
+            };
+            println!("Preparing time: {time}s", time = timer.get_elapsed_time());
+            let mut solver = solvers::create_smastar(one_pdtsp, parameters, sma_parameters);
             io::run_solver_and_dump_solution_history(&mut solver, &args.history).unwrap()
         }
     };

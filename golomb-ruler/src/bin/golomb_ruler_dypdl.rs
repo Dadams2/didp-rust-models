@@ -140,6 +140,10 @@ fn main() {
 
             create_caasdy(model, parameters, FEvaluatorType::Plus)
         }
+        _ => panic!(
+            "Solver {:?} is not supported in dypdl mode. Only Cabs and Astar are available.",
+            args.solver
+        ),
     };
 
     let solution =

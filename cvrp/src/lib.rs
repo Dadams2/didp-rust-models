@@ -171,7 +171,11 @@ impl RoundedInstance {
 #[derive(Debug, Clone, ValueEnum)]
 pub enum SolverChoice {
     Cabs,
+    BlindCabs,
     Astar,
+    Dijkstra,
+    PartialExpansionAstar,
+    SmaStar,
 }
 
 #[derive(Debug, Parser)]
@@ -186,4 +190,8 @@ pub struct Args {
     pub time_limit: f64,
     #[arg(short, long, action, help = "Performs edge reduction")]
     pub reduce_edges: bool,
+    #[arg(long, default_value_t = 0, help = "Delta parameter for Partial Expansion A* (cutoff value). Delta = 0 stores only nodes with l-value not exceeding optimal cost, Delta = i32::MAX is identical to standard A*")]
+    pub pe_delta: i32,
+    #[arg(long, default_value_t = 1000000, help = "Maximum queue size for SMA* (number of nodes to keep in the queue)")]
+    pub sma_max_queue_size: usize,
 }
