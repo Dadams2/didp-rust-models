@@ -22,3 +22,6 @@ members = [
 [profile.release]
 lto = true
 codegen-units = 1
+
+[patch.crates-io]
+rpid = { path = "../rpid" }
