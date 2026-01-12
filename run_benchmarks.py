@@ -342,7 +342,7 @@ def main():
     parser.add_argument(
         '--pe-delta',
         type=int,
-        default=None,
+        default=3000, # A reasonable enough default
         help='Delta parameter for partial-expansion-astar solver (optional)'
     )
     parser.add_argument(
