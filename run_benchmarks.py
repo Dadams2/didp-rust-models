@@ -9,6 +9,8 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 import sys
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 class SolutionResult:
     def __init__(self):
@@ -282,6 +284,29 @@ def print_statistics_table(stats: Dict[str, List[SolutionResult]], problem_class
     
     print()
 
+def run_solver_task(task_info: Dict) -> Dict:
+    """Worker function for running a single solver task in parallel."""
+    result, output, cmd = run_solver(
+        task_info['binary_path'],
+        task_info['input_file'],
+        task_info['solver'],
+        task_info['time_limit'],
+        task_info['memory_limit'],
+        task_info['pe_delta'],
+        task_info['sma_max_queue_size'],
+        task_info['verbose']
+    )
+    
+    return {
+        'problem_class': task_info['problem_class'],
+        'file': os.path.basename(task_info['input_file']),
+        'solver': task_info['solver'],
+        'result': result,
+        'output': output if task_info['verbose'] else None,
+        'command': cmd,
+        'task_id': task_info['task_id']
+    }
+
 def main():
     parser = argparse.ArgumentParser(
         description='Run solvers on multiple instances and collect statistics.'
@@ -327,6 +352,12 @@ def main():
         help='Max queue size parameter for sma-star solver (optional)'
     )
     parser.add_argument(
+        '--num-cores',
+        type=int,
+        default=1,
+        help=f'Number of parallel processes to use (default: 1, max available: {cpu_count()})'
+    )
+    parser.add_argument(
         '--output',
         help='Output file for detailed results (optional)'
     )
@@ -359,68 +390,97 @@ def main():
     print(f"Time limit: {args.time_limit}s per instance")
     if args.memory_limit:
         print(f"Memory limit: {args.memory_limit}MB per instance")
+    
+    # Validate and display number of cores
+    num_cores = min(args.num_cores, cpu_count())
+    if args.num_cores > cpu_count():
+        print(f"Warning: Requested {args.num_cores} cores, but only {cpu_count()} available. Using {num_cores}.", file=sys.stderr)
+    print(f"Using {num_cores} parallel process(es)")
     print()
     
-    # Store results by problem class and overall
-    results_by_class = defaultdict(lambda: defaultdict(list))
-    all_results = defaultdict(list)
-    detailed_results = []
-    
-    # Run solvers
-    total_runs = total_files * len(args.solvers)
-    current_run = 0
-    
+    # Build list of all tasks to run
+    tasks = []
+    task_id = 0
     for problem_class, input_files in problem_classes.items():
-        print(f"\n{'='*110}")
-        print(f"Processing problem class: {problem_class}")
-        print(f"{'='*110}")
-        
         for input_file in input_files:
-            file_name = os.path.basename(input_file)
-            print(f"\nInstance: {file_name}")
-            
             for solver in args.solvers:
-                current_run += 1
-                print(f"  [{current_run}/{total_runs}] Running {solver}...", end='', flush=True)
-                
-                result, output, cmd = run_solver(
-                    args.binary, input_file, solver, args.time_limit,
-                    memory_limit=args.memory_limit,
-                    pe_delta=args.pe_delta,
-                    sma_max_queue_size=args.sma_max_queue_size,
-                    verbose=args.verbose
-                )
-                results_by_class[problem_class][solver].append(result)
-                all_results[solver].append(result)
-                
-                detailed_results.append({
+                tasks.append({
+                    'task_id': task_id,
                     'problem_class': problem_class,
-                    'file': file_name,
+                    'input_file': input_file,
                     'solver': solver,
-                    'result': result,
-                    'output': output if args.verbose else None,
-                    'command': cmd
+                    'binary_path': args.binary,
+                    'time_limit': args.time_limit,
+                    'memory_limit': args.memory_limit,
+                    'pe_delta': args.pe_delta,
+                    'sma_max_queue_size': args.sma_max_queue_size,
+                    'verbose': args.verbose
                 })
+                task_id += 1
+    
+    total_runs = len(tasks)
+    print(f"Starting {total_runs} solver runs...\n")
+    
+    # Run tasks in parallel
+    if num_cores > 1:
+        with Pool(processes=num_cores) as pool:
+            # Use imap_unordered for progress tracking
+            completed = 0
+            detailed_results = []
+            for result_dict in pool.imap_unordered(run_solver_task, tasks):
+                completed += 1
+                detailed_results.append(result_dict)
                 
-                # Print result summary
+                # Print progress
+                result = result_dict['result']
+                print(f"[{completed}/{total_runs}] {result_dict['problem_class']}/{result_dict['file']} - {result_dict['solver']}: ", end='', flush=True)
+                
                 if result.timeout:
-                    print(" TIMEOUT")
+                    print("TIMEOUT")
                 elif result.out_of_memory:
-                    print(" OUT OF MEMORY")
+                    print("OUT OF MEMORY")
                 elif result.search_time is not None:
-                    print(f" {format_time(result.search_time)}", end='')
+                    print(f"{format_time(result.search_time)}", end='')
                     if result.is_optimal:
                         print(" ✓", end='')
                     print()
                 else:
-                    print(" Failed")
-                    if not args.verbose:
-                        print(f"    (run with --verbose to see details)", file=sys.stderr)
-                
-                if args.verbose and output:
-                    print(f"\n--- Output ---\n{output}\n--- End Output ---\n")
+                    print("Failed")
+    else:
+        # Sequential execution (same as before for num_cores=1)
+        detailed_results = []
+        for i, task in enumerate(tasks):
+            print(f"[{i+1}/{total_runs}] {task['problem_class']}/{os.path.basename(task['input_file'])} - {task['solver']}: ", end='', flush=True)
+            result_dict = run_solver_task(task)
+            detailed_results.append(result_dict)
+            
+            result = result_dict['result']
+            if result.timeout:
+                print("TIMEOUT")
+            elif result.out_of_memory:
+                print("OUT OF MEMORY")
+            elif result.search_time is not None:
+                print(f"{format_time(result.search_time)}", end='')
+                if result.is_optimal:
+                    print(" ✓", end='')
+                print()
+            else:
+                print("Failed")
+    
+    # Organize results by problem class and solver
+    results_by_class = defaultdict(lambda: defaultdict(list))
+    all_results = defaultdict(list)
+    
+    for result_dict in detailed_results:
+        problem_class = result_dict['problem_class']
+        solver = result_dict['solver']
+        result = result_dict['result']
         
-        # Print statistics for this problem class
+        results_by_class[problem_class][solver].append(result)
+        all_results[solver].append(result)
+    
+    # Print statistics for each problem class
+    for problem_class in sorted(problem_classes.keys()):
         print_statistics_table(results_by_class[problem_class], problem_class)
     
     # Print overall summary statistics
