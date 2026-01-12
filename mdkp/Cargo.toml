@@ -1,12 +1,12 @@
 [package]
 name = "mdkp"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 tikv-jemallocator = "0.6"
-rpid = "0.2"
+rpid = "0.3.1"
 tsplib-parser = "0.1"
 dypdl = "0.10"
 dypdl-heuristic-search = "0.10"

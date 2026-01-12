@@ -1,13 +1,13 @@
 [package]
 name = "wt"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
 fixedbitset = "0.5"
 clap = { version = "4.5", features = ["derive"] }
 tikv-jemallocator = "0.6"
-rpid = "0.2"
+rpid = "0.3.1"
 dypdl = "0.10.0"
 dypdl-heuristic-search = "0.10.0"
 io-util = { version = "0.2", path = "../io-util" }
