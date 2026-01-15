@@ -30,29 +30,36 @@ def parse_output(output: str) -> SolutionResult:
     """Parse solver output and extract relevant statistics."""
     result = SolutionResult()
     
-    if "The problem is infeasible" in output or "No solution is found" in output:
+    # Check for infeasibility - "No solution is found" can mean timeout or infeasible
+    # "The problem is infeasible" is the definitive infeasibility marker
+    if "The problem is infeasible" in output:
+        result.is_feasible = False
+    elif "No solution is found" in output:
+        # No solution found, but not necessarily infeasible (could be timeout)
         result.is_feasible = False
     
     if "out of memory" in output.lower() or "cannot allocate memory" in output.lower():
         result.out_of_memory = True
     
-    # Parse cost
-    cost_match = re.search(r'^cost:\s*(-?\d+\.?\d*)', output, re.MULTILINE)
+    # Parse cost (can be negative or floating point)
+    cost_match = re.search(r'^cost:\s*(-?[\d.]+(?:e[+-]?\d+)?)', output, re.MULTILINE)
     if cost_match:
         result.cost = float(cost_match.group(1))
+        result.is_feasible = True  # If we have a cost, we have a feasible solution
     
-    # Parse optimal cost
-    optimal_match = re.search(r'^optimal cost:\s*(-?\d+\.?\d*)', output, re.MULTILINE)
+    # Parse optimal cost - if this line exists, the solution is optimal
+    optimal_match = re.search(r'^optimal cost:\s*(-?[\d.]+(?:e[+-]?\d+)?)', output, re.MULTILINE)
     if optimal_match:
         result.optimal_cost = float(optimal_match.group(1))
+        result.is_optimal = True  # The presence of "optimal cost:" indicates optimality
     
     # Parse best bound
-    bound_match = re.search(r'^best bound:\s*(-?\d+\.?\d*)', output, re.MULTILINE)
+    bound_match = re.search(r'^best bound:\s*(-?[\d.]+(?:e[+-]?\d+)?)', output, re.MULTILINE)
     if bound_match:
         result.best_bound = float(bound_match.group(1))
     
     # Parse search time
-    time_match = re.search(r'^Search time:\s*([\d.]+)s', output, re.MULTILINE)
+    time_match = re.search(r'^Search time:\s*([\d.]+(?:e[+-]?\d+)?)s', output, re.MULTILINE)
     if time_match:
         result.search_time = float(time_match.group(1))
     
@@ -66,17 +73,10 @@ def parse_output(output: str) -> SolutionResult:
     if generated_match:
         result.generated = int(generated_match.group(1))
     
-    # Parse tour
+    # Parse tour (optional, for some problem types)
     tour_match = re.search(r'^Tour:\s*(.+)$', output, re.MULTILINE)
     if tour_match:
         result.tour = tour_match.group(1).strip()
-    
-    # Check if optimal (cost == optimal_cost or cost == best_bound)
-    if result.cost is not None:
-        if result.optimal_cost is not None and result.cost == result.optimal_cost:
-            result.is_optimal = True
-        elif result.best_bound is not None and result.cost == result.best_bound:
-            result.is_optimal = True
     
     return result
 
@@ -92,10 +92,10 @@ def get_limit_resource(memory_limit: Optional[int]):
                 # If RLIMIT_AS fails on macOS, try RLIMIT_DATA instead
                 try:
                     resource.setrlimit(resource.RLIMIT_DATA, (mem_bytes, mem_bytes))
-                except (ValueError, OSError):
-                    # If all fails, just continue without memory limit
-                    # TODO should we raise exception? it would kill the subprocess
-                    pass
+                except (ValueError, OSError) as e2:
+                    # If all fails, print warning but continue
+                    # Cannot raise exception here as it would kill the subprocess immediately
+                    print(f"Warning: Failed to set memory limit: {e}, {e2}", file=sys.stderr)
     
     return limit_resources
 
@@ -135,36 +135,53 @@ def run_solver(binary_path: str, input_file: str, solver: str,
     limit_fn = get_limit_resource(memory_limit) if memory_limit else None
     
     try:
-        result = subprocess.run(
+        # Use Popen instead of run() because preexec_fn doesn't work with run() on some systems
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=time_limit + 10,  # Add buffer to time limit for subprocess timeout
             preexec_fn=limit_fn  # Set resource limits
         )
-        output = result.stdout + result.stderr
+        
+        try:
+            stdout, stderr = process.communicate(timeout=time_limit + 10)
+            returncode = process.returncode
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            returncode = process.returncode
+            error_msg = f"  Timeout for {solver} on {os.path.basename(input_file)}"
+            if verbose:
+                print(error_msg, file=sys.stderr)
+            result = SolutionResult()
+            result.timeout = True
+            return result, "", cmd_str
+        
+        output = stdout + stderr
         
         if verbose:
-            print(f"  Return code: {result.returncode}", file=sys.stderr)
-            if result.returncode != 0:
-                print(f"  STDERR: {result.stderr}", file=sys.stderr)
-                print(f"  STDOUT: {result.stdout}", file=sys.stderr)
+            print(f"  Return code: {returncode}", file=sys.stderr)
+            if returncode != 0:
+                print(f"  STDERR: {stderr}", file=sys.stderr)
+                print(f"  STDOUT: {stdout}", file=sys.stderr)
         
         parsed_result = parse_output(output)
         
-        # Check for memory errors in return code
-        if result.returncode != 0 and not parsed_result.out_of_memory:
-            if "out of memory" in output.lower() or "cannot allocate memory" in output.lower():
+        # Check for memory errors in return code or output
+        # Return codes: -9 (SIGKILL), 137 (128+9), 247 (256-9 on some systems)
+        # Also check for common OOM strings
+        if returncode != 0 and not parsed_result.out_of_memory:
+            if (returncode in [-9, 137, 247] or 
+                "out of memory" in output.lower() or 
+                "cannot allocate memory" in output.lower() or
+                "memory allocation" in output.lower() or
+                "bad allocation" in output.lower()):
                 parsed_result.out_of_memory = True
+                if verbose:
+                    print(f"  Detected OOM: returncode={returncode}", file=sys.stderr)
         
         return parsed_result, output, cmd_str
-    except subprocess.TimeoutExpired:
-        error_msg = f"  Timeout for {solver} on {os.path.basename(input_file)}"
-        if verbose:
-            print(error_msg, file=sys.stderr)
-        result = SolutionResult()
-        result.timeout = True
-        return result, "", cmd_str
     except Exception as e:
         error_msg = f"  Error running {solver} on {input_file}: {e}"
         print(error_msg, file=sys.stderr)
@@ -312,7 +329,7 @@ def main():
         description='Run solvers on multiple instances and collect statistics.'
     )
     parser.add_argument(
-        'directory',
+        '--directory',
         help='Base directory containing subdirectories (problem classes) with instance files'
     )
     parser.add_argument(
