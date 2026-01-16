@@ -21,7 +21,8 @@ class SolutionResult:
         self.expanded: Optional[int] = None
         self.generated: Optional[int] = None
         self.is_optimal: bool = False
-        self.is_feasible: bool = True
+        self.is_infeasible: bool = False
+        self.is_valid_solution: bool = False
         self.tour: Optional[str] = None
         self.timeout: bool = False
         self.out_of_memory: bool = False
@@ -30,13 +31,9 @@ def parse_output(output: str) -> SolutionResult:
     """Parse solver output and extract relevant statistics."""
     result = SolutionResult()
     
-    # Check for infeasibility - "No solution is found" can mean timeout or infeasible
-    # "The problem is infeasible" is the definitive infeasibility marker
+    # Check for infeasibility
     if "The problem is infeasible" in output:
-        result.is_feasible = False
-    elif "No solution is found" in output:
-        # No solution found, but not necessarily infeasible (could be timeout)
-        result.is_feasible = False
+        result.is_infeasible = True
     
     if "out of memory" in output.lower() or "cannot allocate memory" in output.lower():
         result.out_of_memory = True
@@ -45,7 +42,6 @@ def parse_output(output: str) -> SolutionResult:
     cost_match = re.search(r'^cost:\s*(-?[\d.]+(?:e[+-]?\d+)?)', output, re.MULTILINE)
     if cost_match:
         result.cost = float(cost_match.group(1))
-        result.is_feasible = True  # If we have a cost, we have a feasible solution
     
     # Parse optimal cost - if this line exists, the solution is optimal
     optimal_match = re.search(r'^optimal cost:\s*(-?[\d.]+(?:e[+-]?\d+)?)', output, re.MULTILINE)
@@ -77,6 +73,10 @@ def parse_output(output: str) -> SolutionResult:
     tour_match = re.search(r'^Tour:\s*(.+)$', output, re.MULTILINE)
     if tour_match:
         result.tour = tour_match.group(1).strip()
+
+    # Parse validity from library output
+    if "The solution is valid." in output:
+        result.is_valid_solution = True
     
     return result
 
@@ -258,7 +258,7 @@ def print_statistics_table(stats: Dict[str, List[SolutionResult]], problem_class
                 'avg_expanded': None,
                 'avg_generated': None,
                 'optimal_count': 0,
-                'feasible_count': 0,
+                'infeasible_count': sum(1 for r in results if r.is_infeasible),
                 'timeout_count': timeout_count,
                 'oom_count': oom_count
             }
@@ -268,28 +268,30 @@ def print_statistics_table(stats: Dict[str, List[SolutionResult]], problem_class
         expanded = [r.expanded for r in valid_results if r.expanded is not None]
         generated = [r.generated for r in valid_results if r.generated is not None]
         optimal_count = sum(1 for r in valid_results if r.is_optimal)
-        feasible_count = sum(1 for r in valid_results if r.is_feasible and r.cost is not None)
+        solved_count = sum(1 for r in results if r.is_valid_solution)
+        infeasible_count = sum(1 for r in results if r.is_infeasible)
         
         solver_stats[solver] = {
             'count': len(results),
-            'solved_count': feasible_count,
+            'solved_count': solved_count,
             'avg_time': sum(times) / len(times) if times else None,
             'avg_expanded': sum(expanded) / len(expanded) if expanded else None,
             'avg_generated': sum(generated) / len(generated) if generated else None,
             'optimal_count': optimal_count,
-            'feasible_count': feasible_count,
+            'infeasible_count': infeasible_count,
             'timeout_count': timeout_count,
             'oom_count': oom_count
         }
     
     # Print table header
-    print(f"\n{'Solver':<20} {'Solved':<8} {'Timeouts':<10} {'OOM':<6} {'Avg Time':<12} {'Avg Expanded':<14} {'Avg Generated':<14} {'Optimal':<10}")
-    print("-" * 110)
+    print(f"\n{'Solver':<20} {'Solved':<8} {'Infeasible':<11} {'Timeouts':<10} {'OOM':<6} {'Avg Time':<12} {'Avg Expanded':<14} {'Avg Generated':<14} {'Optimal':<10}")
+    print("-" * 122)
     
     # Print each solver's statistics
     for solver in sorted(solver_stats.keys()):
         stats_data = solver_stats[solver]
         solved_count = stats_data['solved_count']
+        infeasible_count = stats_data['infeasible_count']
         timeout_count = stats_data['timeout_count']
         oom_count = stats_data['oom_count']
         avg_time = format_time(stats_data['avg_time'])
@@ -297,7 +299,7 @@ def print_statistics_table(stats: Dict[str, List[SolutionResult]], problem_class
         avg_generated = f"{stats_data['avg_generated']:.0f}" if stats_data['avg_generated'] is not None else "N/A"
         optimal = f"{stats_data['optimal_count']}/{solved_count}"
         
-        print(f"{solver:<20} {solved_count:<8} {timeout_count:<10} {oom_count:<6} {avg_time:<12} {avg_expanded:<14} {avg_generated:<14} {optimal:<10}")
+        print(f"{solver:<20} {solved_count:<8} {infeasible_count:<11} {timeout_count:<10} {oom_count:<6} {avg_time:<12} {avg_expanded:<14} {avg_generated:<14} {optimal:<10}")
     
     print()
 
@@ -506,7 +508,7 @@ def main():
     # Write detailed results to file if requested
     if args.output:
         with open(args.output, 'w') as f:
-            f.write("Problem Class,File,Solver,Cost,Optimal Cost,Best Bound,Search Time,Expanded,Generated,Is Optimal,Is Feasible,Timeout,Out Of Memory\n")
+            f.write("Problem Class,File,Solver,Cost,Optimal Cost,Best Bound,Search Time,Expanded,Generated,Is Optimal,Is Valid Solution,Is Infeasible,Timeout,Out Of Memory\n")
             for entry in detailed_results:
                 r = entry['result']
                 f.write(f"{entry['problem_class']},{entry['file']},{entry['solver']},")
@@ -516,7 +518,7 @@ def main():
                 f.write(f"{r.search_time if r.search_time is not None else ''},")
                 f.write(f"{r.expanded if r.expanded is not None else ''},")
                 f.write(f"{r.generated if r.generated is not None else ''},")
-                f.write(f"{r.is_optimal},{r.is_feasible},{r.timeout},{r.out_of_memory}\n")
+                f.write(f"{r.is_optimal},{r.is_valid_solution},{r.is_infeasible},{r.timeout},{r.out_of_memory}\n")
         print(f"\nDetailed results written to: {args.output}")
 
 if __name__ == '__main__':
