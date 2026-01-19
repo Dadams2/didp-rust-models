@@ -23,7 +23,6 @@ class SolutionResult:
         self.is_optimal: bool = False
         self.is_infeasible: bool = False
         self.is_valid_solution: bool = False
-        self.tour: Optional[str] = None
         self.timeout: bool = False
         self.out_of_memory: bool = False
 
@@ -68,11 +67,6 @@ def parse_output(output: str) -> SolutionResult:
     generated_match = re.search(r'^Generated:\s*(\d+)', output, re.MULTILINE)
     if generated_match:
         result.generated = int(generated_match.group(1))
-    
-    # Parse tour (optional, for some problem types)
-    tour_match = re.search(r'^Tour:\s*(.+)$', output, re.MULTILINE)
-    if tour_match:
-        result.tour = tour_match.group(1).strip()
 
     # Parse validity from library output
     if "The solution is valid." in output:
@@ -88,14 +82,19 @@ def get_limit_resource(memory_limit: Optional[int]):
             mem_bytes = memory_limit * 1024 * 1024
             try:
                 resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+                # Verify the limit was set by reading it back
+                soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+                print(f"[SUBPROCESS] RLIMIT_AS set: soft={soft} ({soft/(1024*1024):.0f}MB), hard={hard} ({hard/(1024*1024):.0f}MB)", file=sys.stderr)
             except (ValueError, OSError) as e:
                 # If RLIMIT_AS fails on macOS, try RLIMIT_DATA instead
                 try:
                     resource.setrlimit(resource.RLIMIT_DATA, (mem_bytes, mem_bytes))
+                    soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
+                    print(f"[SUBPROCESS] RLIMIT_DATA set: soft={soft} ({soft/(1024*1024):.0f}MB), hard={hard} ({hard/(1024*1024):.0f}MB)", file=sys.stderr)
                 except (ValueError, OSError) as e2:
                     # If all fails, print warning but continue
                     # Cannot raise exception here as it would kill the subprocess immediately
-                    print(f"Warning: Failed to set memory limit: {e}, {e2}", file=sys.stderr)
+                    print(f"[SUBPROCESS] Warning: Failed to set memory limit: {e}, {e2}", file=sys.stderr)
     
     return limit_resources
 
@@ -124,12 +123,6 @@ def run_solver(binary_path: str, input_file: str, solver: str,
         print(f"\n  Command: {cmd_str}", file=sys.stderr)
         if memory_limit:
             print(f"  Memory limit: {memory_limit}MB ({memory_limit * 1024 * 1024} bytes)", file=sys.stderr)
-            # Test if we can actually set this limit
-            try:
-                soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-                print(f"  Current RLIMIT_AS: soft={soft}, hard={hard}", file=sys.stderr)
-            except (ValueError, OSError) as e:
-                print(f"  Warning: Cannot get RLIMIT_AS: {e}", file=sys.stderr)
     
     # Create resource limit function (only for memory, time limit is handled by the solver)
     limit_fn = get_limit_resource(memory_limit) if memory_limit else None
@@ -162,11 +155,11 @@ def run_solver(binary_path: str, input_file: str, solver: str,
         
         if verbose:
             print(f"  Return code: {returncode}", file=sys.stderr)
-            if returncode != 0:
-                print(f"  STDERR: {stderr}", file=sys.stderr)
-                print(f"  STDOUT: {stdout}", file=sys.stderr)
+            print(f"  STDERR: {stderr}", file=sys.stderr)
+            print(f"  STDOUT: {stdout}", file=sys.stderr)
         
         parsed_result = parse_output(output)
+        
         
         # Check for memory errors in return code or output
         # Return codes: -9 (SIGKILL), 137 (128+9), 247 (256-9 on some systems)
@@ -326,6 +319,18 @@ def run_solver_task(task_info: Dict) -> Dict:
         'task_id': task_info['task_id']
     }
 
+def print_task_result(result: SolutionResult) -> None:
+    """Print the result of a solver task."""
+    if result.timeout:
+        print("TIMEOUT")
+    elif result.out_of_memory:
+        print("OUT OF MEMORY")
+    elif result.search_time is not None:
+        status = "optimal" if result.is_optimal else "solved"
+        print(f"{format_time(result.search_time)} ({status})")
+    else:
+        print("Failed")
+
 def main():
     parser = argparse.ArgumentParser(
         description='Run solvers on multiple instances and collect statistics.'
@@ -440,51 +445,22 @@ def main():
     total_runs = len(tasks)
     print(f"Starting {total_runs} solver runs...\n")
     
-    # Run tasks in parallel
+    # Run tasks in parallel or sequentially
+    detailed_results = []
     if num_cores > 1:
         with Pool(processes=num_cores) as pool:
-            # Use imap_unordered for progress tracking
             completed = 0
-            detailed_results = []
             for result_dict in pool.imap_unordered(run_solver_task, tasks):
                 completed += 1
                 detailed_results.append(result_dict)
-                
-                # Print progress
-                result = result_dict['result']
                 print(f"[{completed}/{total_runs}] {result_dict['problem_class']}/{result_dict['file']} - {result_dict['solver']}: ", end='', flush=True)
-                
-                if result.timeout:
-                    print("TIMEOUT")
-                elif result.out_of_memory:
-                    print("OUT OF MEMORY")
-                elif result.search_time is not None:
-                    print(f"{format_time(result.search_time)}", end='')
-                    if result.is_optimal:
-                        print(" ✓", end='')
-                    print()
-                else:
-                    print("Failed")
+                print_task_result(result_dict['result'])
     else:
-        # Sequential execution (same as before for num_cores=1)
-        detailed_results = []
         for i, task in enumerate(tasks):
             print(f"[{i+1}/{total_runs}] {task['problem_class']}/{os.path.basename(task['input_file'])} - {task['solver']}: ", end='', flush=True)
             result_dict = run_solver_task(task)
             detailed_results.append(result_dict)
-            
-            result = result_dict['result']
-            if result.timeout:
-                print("TIMEOUT")
-            elif result.out_of_memory:
-                print("OUT OF MEMORY")
-            elif result.search_time is not None:
-                print(f"{format_time(result.search_time)}", end='')
-                if result.is_optimal:
-                    print(" ✓", end='')
-                print()
-            else:
-                print("Failed")
+            print_task_result(result_dict['result'])
     
     # Organize results by problem class and solver
     results_by_class = defaultdict(lambda: defaultdict(list))
