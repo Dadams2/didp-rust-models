@@ -22,7 +22,6 @@ class SolutionResult:
         self.generated: Optional[int] = None
         self.is_optimal: bool = False
         self.is_infeasible: bool = False
-        self.is_valid_solution: bool = False
         self.timeout: bool = False
         self.out_of_memory: bool = False
 
@@ -67,10 +66,6 @@ def parse_output(output: str) -> SolutionResult:
     generated_match = re.search(r'^Generated:\s*(\d+)', output, re.MULTILINE)
     if generated_match:
         result.generated = int(generated_match.group(1))
-
-    # Parse validity from library output
-    if "The solution is valid." in output:
-        result.is_valid_solution = True
     
     return result
 
@@ -261,7 +256,7 @@ def print_statistics_table(stats: Dict[str, List[SolutionResult]], problem_class
         expanded = [r.expanded for r in valid_results if r.expanded is not None]
         generated = [r.generated for r in valid_results if r.generated is not None]
         optimal_count = sum(1 for r in valid_results if r.is_optimal)
-        solved_count = sum(1 for r in results if r.is_valid_solution)
+        solved_count = sum(1 for r in results if r.is_optimal)
         infeasible_count = sum(1 for r in results if r.is_infeasible)
         
         solver_stats[solver] = {
@@ -484,7 +479,7 @@ def main():
     # Write detailed results to file if requested
     if args.output:
         with open(args.output, 'w') as f:
-            f.write("Problem Class,File,Solver,Cost,Optimal Cost,Best Bound,Search Time,Expanded,Generated,Is Optimal,Is Valid Solution,Is Infeasible,Timeout,Out Of Memory\n")
+            f.write("Problem Class,File,Solver,Cost,Optimal Cost,Best Bound,Search Time,Expanded,Generated,Is Optimal,Is Infeasible,Timeout,Out Of Memory\n")
             for entry in detailed_results:
                 r = entry['result']
                 f.write(f"{entry['problem_class']},{entry['file']},{entry['solver']},")
@@ -494,7 +489,7 @@ def main():
                 f.write(f"{r.search_time if r.search_time is not None else ''},")
                 f.write(f"{r.expanded if r.expanded is not None else ''},")
                 f.write(f"{r.generated if r.generated is not None else ''},")
-                f.write(f"{r.is_optimal},{r.is_valid_solution},{r.is_infeasible},{r.timeout},{r.out_of_memory}\n")
+                f.write(f"{r.is_optimal},{r.is_infeasible},{r.timeout},{r.out_of_memory}\n")
         print(f"\nDetailed results written to: {args.output}")
 
 if __name__ == '__main__':
