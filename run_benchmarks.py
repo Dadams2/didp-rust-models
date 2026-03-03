@@ -169,6 +169,16 @@ def run_solver(binary_path: str, input_file: str, solver: str,
                 if verbose:
                     print(f"  Detected OOM: returncode={returncode}", file=sys.stderr)
         
+        # If process terminated without finding optimal solution and no other failure criteria,
+        # treat it as a timeout (likely hit internal time limit)
+        if (not parsed_result.is_optimal and 
+            not parsed_result.is_infeasible and 
+            not parsed_result.out_of_memory and 
+            not parsed_result.timeout):
+            parsed_result.timeout = True
+            if verbose:
+                print(f"  Marking as timeout: no optimal solution found and no other failure criteria", file=sys.stderr)
+        
         return parsed_result, output, cmd_str
     except Exception as e:
         error_msg = f"  Error running {solver} on {input_file}: {e}"
